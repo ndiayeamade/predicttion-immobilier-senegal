@@ -8,47 +8,101 @@ Auteur : Amade Gueye Ndiaye
 """
 
 import os
-import sys
-import subprocess
-import streamlit as st
+import numpy as np
 import pandas as pd
-import joblib
+import streamlit as st
+from sklearn.model_selection import train_test_split
+from sklearn.ensemble import RandomForestRegressor
+from sklearn.preprocessing import LabelEncoder
 
 # ----------------------------------------------------------------------
-# Génération automatique des données et du modèle si absents
-# (nécessaire pour un déploiement cloud, où personne ne lance
-# generate_data.py / train.py à la main avant le premier démarrage)
+# Génération du dataset directement en mémoire (pas de subprocess,
+# pas de fichier CSV nécessaire -> plus rapide et plus fiable sur le cloud)
+# ----------------------------------------------------------------------
+@st.cache_data
+def generer_donnees():
+    np.random.seed(42)
+    N = 600
+
+    quartiers_coef = {
+        "Almadies": 1.00, "Ngor": 0.95, "Mermoz": 0.85, "Sacré-Cœur": 0.80,
+        "Plateau": 0.90, "Yoff": 0.70, "Ouakam": 0.75, "Liberté 6": 0.65,
+        "Parcelles Assainies": 0.55, "Guédiawaye": 0.40, "Pikine": 0.38,
+        "Diamniadio": 0.50, "Rufisque": 0.42, "Thiès": 0.35, "Fatick": 0.28,
+        "Mbour": 0.45, "Saly": 0.60,
+    }
+    noms = list(quartiers_coef.keys())
+    poids = np.array(list(quartiers_coef.values()))
+    proba = (1 / poids)
+    proba = proba / proba.sum()
+    quartier_choisi = np.random.choice(noms, size=N, p=proba)
+
+    superficie = np.random.normal(180, 90, N).clip(35, 800)
+    chambres = np.random.choice([1, 2, 3, 4, 5, 6], N, p=[0.05, 0.20, 0.30, 0.25, 0.15, 0.05])
+    salles_bain = (chambres - np.random.choice([0, 1], N, p=[0.6, 0.4])).clip(1, None)
+    age_bien = np.random.exponential(8, N).clip(0, 40).round().astype(int)
+    parking = np.random.choice([0, 1], N, p=[0.35, 0.65])
+    piscine = np.random.choice([0, 1], N, p=[0.90, 0.10])
+    etage = np.random.choice([0, 1, 2, 3, 4], N, p=[0.45, 0.25, 0.15, 0.10, 0.05])
+    distance_mer = np.random.exponential(4, N).clip(0.1, 30)
+
+    coef = np.array([quartiers_coef[q] for q in quartier_choisi])
+    prix = (
+        superficie * 350_000 * coef
+        + chambres * 1_500_000
+        + salles_bain * 1_000_000
+        - age_bien * 800_000
+        + parking * 3_000_000
+        + piscine * 12_000_000
+        - etage * 500_000
+        - distance_mer * 400_000
+    )
+    bruit = np.random.normal(0, 8_000_000, N)
+    prix = (prix + bruit).clip(5_000_000, None)
+
+    return pd.DataFrame({
+        "Quartier": quartier_choisi,
+        "Superficie_m2": superficie.round(1),
+        "Chambres": chambres,
+        "Salles_bain": salles_bain,
+        "Age_annees": age_bien,
+        "Parking": parking,
+        "Piscine": piscine,
+        "Etage": etage,
+        "Distance_mer_km": distance_mer.round(2),
+        "Prix_FCFA": prix.round(0).astype(int),
+    })
+
+
+# ----------------------------------------------------------------------
+# Entraînement du modèle directement en mémoire (rapide : <1s)
 # ----------------------------------------------------------------------
 @st.cache_resource
-def charger_ou_entrainer():
-    if not os.path.exists("data/house_data_senegal.csv"):
-        with st.spinner("Génération du jeu de données..."):
-            result = subprocess.run(
-                [sys.executable, "generate_data.py"],
-                capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                st.error("Erreur lors de la génération des données :")
-                st.code(result.stderr or result.stdout)
-                st.stop()
+def entrainer_modele():
+    data = generer_donnees()
 
-    if not os.path.exists("models/model.pkl"):
-        with st.spinner("Entraînement du modèle (premier lancement)..."):
-            result = subprocess.run(
-                [sys.executable, "train.py"],
-                capture_output=True, text=True
-            )
-            if result.returncode != 0:
-                st.error("Erreur lors de l'entraînement du modèle :")
-                st.code(result.stderr or result.stdout)
-                st.stop()
+    encoder = LabelEncoder()
+    data["Quartier_encoded"] = encoder.fit_transform(data["Quartier"])
 
-    model = joblib.load("models/model.pkl")
-    encoder = joblib.load("models/encoder.pkl")
-    quartiers = sorted(joblib.load("models/quartiers.pkl"))
+    features = [
+        "Quartier_encoded", "Superficie_m2", "Chambres", "Salles_bain",
+        "Age_annees", "Parking", "Piscine", "Etage", "Distance_mer_km"
+    ]
+    X = data[features]
+    y = data["Prix_FCFA"]
+
+    X_train, X_test, y_train, y_test = train_test_split(
+        X, y, test_size=0.2, random_state=42
+    )
+
+    model = RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10)
+    model.fit(X_train, y_train)
+
+    quartiers = sorted(data["Quartier"].unique())
     return model, encoder, quartiers
 
-model, encoder, quartiers = charger_ou_entrainer()
+
+model, encoder, quartiers = entrainer_modele()
 
 # ----------------------------------------------------------------------
 # Configuration de la page
@@ -110,7 +164,6 @@ if st.button("🔮 Prédire le prix", type="primary", use_container_width=True):
 
     st.success(f"💰 Prix estimé : **{prediction:,.0f} FCFA**".replace(",", " "))
 
-    # Petite fourchette d'incertitude basée sur le MAE du modèle (~9.5M FCFA)
     marge = 9_500_000
     st.info(
         f"Fourchette probable : entre **{prediction - marge:,.0f}** et "
