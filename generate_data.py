@@ -89,7 +89,8 @@ data = pd.DataFrame({
     "Distance_mer_km": distance_mer_km.round(2),
     "Prix_FCFA": prix.round(0).astype(int),
 })
-
+import os
+os.makedirs("data", exist_ok=True)
 data.to_csv("data/house_data_senegal.csv", index=False, encoding="utf-8")
 
 print(f"✅ Dataset généré : {N} biens immobiliers")
