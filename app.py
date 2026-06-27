@@ -23,11 +23,25 @@ import joblib
 def charger_ou_entrainer():
     if not os.path.exists("data/house_data_senegal.csv"):
         with st.spinner("Génération du jeu de données..."):
-            subprocess.run([sys.executable, "generate_data.py"], check=True)
+            result = subprocess.run(
+                [sys.executable, "generate_data.py"],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                st.error("Erreur lors de la génération des données :")
+                st.code(result.stderr or result.stdout)
+                st.stop()
 
     if not os.path.exists("models/model.pkl"):
         with st.spinner("Entraînement du modèle (premier lancement)..."):
-            subprocess.run([sys.executable, "train.py"], check=True)
+            result = subprocess.run(
+                [sys.executable, "train.py"],
+                capture_output=True, text=True
+            )
+            if result.returncode != 0:
+                st.error("Erreur lors de l'entraînement du modèle :")
+                st.code(result.stderr or result.stdout)
+                st.stop()
 
     model = joblib.load("models/model.pkl")
     encoder = joblib.load("models/encoder.pkl")
