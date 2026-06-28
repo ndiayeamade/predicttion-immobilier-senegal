@@ -1,28 +1,31 @@
 """
-app.py
-Application Streamlit qui prédit le prix d'un bien immobilier
-au Sénégal à partir de ses caractéristiques.
-
-Lancer avec : streamlit run app.py
+app.py — Prédicteur de Prix Immobilier au Sénégal
 Auteur : Amade Gueye Ndiaye
+
+Fichier UNIQUE et AUTONOME :
+- pas de subprocess
+- pas de fichiers externes à générer
+- pas de modèle à charger depuis le disque
+Tout est calculé en mémoire, à chaque démarrage, en moins de 2 secondes.
 """
 
-import os
+import streamlit as st
+
+# 1) TOUJOURS en premier, avant tout autre appel à "st."
+st.set_page_config(page_title="Prédicteur Immobilier Sénégal", page_icon="🏠")
+
 import numpy as np
 import pandas as pd
-import streamlit as st
 from sklearn.model_selection import train_test_split
 from sklearn.ensemble import RandomForestRegressor
 from sklearn.preprocessing import LabelEncoder
 
-# ----------------------------------------------------------------------
-# Génération du dataset directement en mémoire (pas de subprocess,
-# pas de fichier CSV nécessaire -> plus rapide et plus fiable sur le cloud)
-# ----------------------------------------------------------------------
-@st.cache_data
-def generer_donnees():
-    np.random.seed(42)
-    N = 600
+
+@st.cache_resource
+def charger_modele():
+    """Génère les données ET entraîne le modèle, une seule fois, en mémoire."""
+    rng = np.random.default_rng(42)
+    n = 600
 
     quartiers_coef = {
         "Almadies": 1.00, "Ngor": 0.95, "Mermoz": 0.85, "Sacré-Cœur": 0.80,
@@ -35,146 +38,89 @@ def generer_donnees():
     poids = np.array(list(quartiers_coef.values()))
     proba = (1 / poids)
     proba = proba / proba.sum()
-    quartier_choisi = np.random.choice(noms, size=N, p=proba)
+    quartier = rng.choice(noms, size=n, p=proba)
 
-    superficie = np.random.normal(180, 90, N).clip(35, 800)
-    chambres = np.random.choice([1, 2, 3, 4, 5, 6], N, p=[0.05, 0.20, 0.30, 0.25, 0.15, 0.05])
-    salles_bain = (chambres - np.random.choice([0, 1], N, p=[0.6, 0.4])).clip(1, None)
-    age_bien = np.random.exponential(8, N).clip(0, 40).round().astype(int)
-    parking = np.random.choice([0, 1], N, p=[0.35, 0.65])
-    piscine = np.random.choice([0, 1], N, p=[0.90, 0.10])
-    etage = np.random.choice([0, 1, 2, 3, 4], N, p=[0.45, 0.25, 0.15, 0.10, 0.05])
-    distance_mer = np.random.exponential(4, N).clip(0.1, 30)
+    superficie = np.clip(rng.normal(180, 90, n), 35, 800)
+    chambres = rng.choice([1, 2, 3, 4, 5, 6], n, p=[0.05, 0.20, 0.30, 0.25, 0.15, 0.05])
+    salles_bain = np.clip(chambres - rng.choice([0, 1], n, p=[0.6, 0.4]), 1, None)
+    age = np.clip(rng.exponential(8, n).round(), 0, 40)
+    parking = rng.choice([0, 1], n, p=[0.35, 0.65])
+    piscine = rng.choice([0, 1], n, p=[0.90, 0.10])
+    etage = rng.choice([0, 1, 2, 3, 4], n, p=[0.45, 0.25, 0.15, 0.10, 0.05])
+    dist_mer = np.clip(rng.exponential(4, n), 0.1, 30)
 
-    coef = np.array([quartiers_coef[q] for q in quartier_choisi])
+    coef = np.array([quartiers_coef[q] for q in quartier])
     prix = (
         superficie * 350_000 * coef
         + chambres * 1_500_000
         + salles_bain * 1_000_000
-        - age_bien * 800_000
+        - age * 800_000
         + parking * 3_000_000
         + piscine * 12_000_000
         - etage * 500_000
-        - distance_mer * 400_000
+        - dist_mer * 400_000
+        + rng.normal(0, 8_000_000, n)
     )
-    bruit = np.random.normal(0, 8_000_000, N)
-    prix = (prix + bruit).clip(5_000_000, None)
+    prix = np.clip(prix, 5_000_000, None)
 
-    return pd.DataFrame({
-        "Quartier": quartier_choisi,
-        "Superficie_m2": superficie.round(1),
-        "Chambres": chambres,
-        "Salles_bain": salles_bain,
-        "Age_annees": age_bien,
-        "Parking": parking,
-        "Piscine": piscine,
-        "Etage": etage,
-        "Distance_mer_km": distance_mer.round(2),
-        "Prix_FCFA": prix.round(0).astype(int),
+    df = pd.DataFrame({
+        "Quartier": quartier, "Superficie_m2": superficie.round(1),
+        "Chambres": chambres, "Salles_bain": salles_bain, "Age_annees": age,
+        "Parking": parking, "Piscine": piscine, "Etage": etage,
+        "Distance_mer_km": dist_mer.round(2), "Prix_FCFA": prix.round(0),
     })
 
-
-# ----------------------------------------------------------------------
-# Entraînement du modèle directement en mémoire (rapide : <1s)
-# ----------------------------------------------------------------------
-@st.cache_resource
-def entrainer_modele():
-    data = generer_donnees()
-
     encoder = LabelEncoder()
-    data["Quartier_encoded"] = encoder.fit_transform(data["Quartier"])
+    df["Quartier_encoded"] = encoder.fit_transform(df["Quartier"])
 
-    features = [
-        "Quartier_encoded", "Superficie_m2", "Chambres", "Salles_bain",
-        "Age_annees", "Parking", "Piscine", "Etage", "Distance_mer_km"
-    ]
-    X = data[features]
-    y = data["Prix_FCFA"]
-
+    cols = ["Quartier_encoded", "Superficie_m2", "Chambres", "Salles_bain",
+            "Age_annees", "Parking", "Piscine", "Etage", "Distance_mer_km"]
     X_train, X_test, y_train, y_test = train_test_split(
-        X, y, test_size=0.2, random_state=42
+        df[cols], df["Prix_FCFA"], test_size=0.2, random_state=42
     )
 
-    model = RandomForestRegressor(n_estimators=100, random_state=42, max_depth=10)
+    model = RandomForestRegressor(n_estimators=80, max_depth=10, random_state=42)
     model.fit(X_train, y_train)
 
-    quartiers = sorted(data["Quartier"].unique())
-    return model, encoder, quartiers
+    return model, encoder, sorted(df["Quartier"].unique())
 
 
-model, encoder, quartiers = entrainer_modele()
+# 2) Charger le modèle (mis en cache : ne s'exécute qu'une fois)
+model, encoder, quartiers = charger_modele()
 
-# ----------------------------------------------------------------------
-# Configuration de la page
-# ----------------------------------------------------------------------
-st.set_page_config(
-    page_title="Prédicteur Immobilier Sénégal",
-    page_icon="🏠",
-    layout="centered",
-)
-
+# 3) Interface utilisateur
 st.title("🏠 Prédicteur de Prix Immobilier — Sénégal")
-st.markdown(
+st.write(
     "Estimez le prix d'un bien immobilier au Sénégal grâce à un modèle "
-    "d'intelligence artificielle (Random Forest) entraîné sur un jeu de "
-    "données du marché local."
+    "de Machine Learning (Random Forest)."
 )
 
-st.divider()
-
-# ----------------------------------------------------------------------
-# Formulaire de saisie des caractéristiques du bien
-# ----------------------------------------------------------------------
 col1, col2 = st.columns(2)
-
 with col1:
-    quartier = st.selectbox("📍 Quartier / Ville", quartiers)
-    superficie = st.number_input("📐 Superficie (m²)", min_value=20, max_value=1000, value=150)
-    chambres = st.slider("🛏️ Nombre de chambres", 1, 6, 3)
-    salles_bain = st.slider("🛁 Nombre de salles de bain", 1, 5, 2)
-
+    quartier = st.selectbox("📍 Quartier", quartiers)
+    superficie = st.number_input("📐 Superficie (m²)", 20, 1000, 150)
+    chambres = st.slider("🛏️ Chambres", 1, 6, 3)
+    salles_bain = st.slider("🛁 Salles de bain", 1, 5, 2)
 with col2:
-    age = st.number_input("📅 Âge du bien (années)", min_value=0, max_value=50, value=5)
-    distance_mer = st.number_input("🌊 Distance de la mer (km)", min_value=0.0, max_value=50.0, value=3.0)
-    parking = st.checkbox("🚗 Parking disponible")
+    age = st.number_input("📅 Âge (années)", 0, 50, 5)
+    dist_mer = st.number_input("🌊 Distance mer (km)", 0.0, 50.0, 3.0)
+    parking = st.checkbox("🚗 Parking")
     piscine = st.checkbox("🏊 Piscine")
     etage = st.slider("🏢 Étage", 0, 4, 0)
 
-st.divider()
-
-# ----------------------------------------------------------------------
-# Prédiction
-# ----------------------------------------------------------------------
 if st.button("🔮 Prédire le prix", type="primary", use_container_width=True):
-    quartier_encoded = encoder.transform([quartier])[0]
-
-    X_new = pd.DataFrame([{
-        "Quartier_encoded": quartier_encoded,
-        "Superficie_m2": superficie,
-        "Chambres": chambres,
-        "Salles_bain": salles_bain,
-        "Age_annees": age,
-        "Parking": int(parking),
-        "Piscine": int(piscine),
-        "Etage": etage,
-        "Distance_mer_km": distance_mer,
+    x = pd.DataFrame([{
+        "Quartier_encoded": encoder.transform([quartier])[0],
+        "Superficie_m2": superficie, "Chambres": chambres,
+        "Salles_bain": salles_bain, "Age_annees": age,
+        "Parking": int(parking), "Piscine": int(piscine),
+        "Etage": etage, "Distance_mer_km": dist_mer,
     }])
-
-    prediction = model.predict(X_new)[0]
-
-    st.success(f"💰 Prix estimé : **{prediction:,.0f} FCFA**".replace(",", " "))
-
+    prix_estime = model.predict(x)[0]
+    st.success(f"💰 Prix estimé : **{prix_estime:,.0f} FCFA**".replace(",", " "))
     marge = 9_500_000
     st.info(
-        f"Fourchette probable : entre **{prediction - marge:,.0f}** et "
-        f"**{prediction + marge:,.0f} FCFA**".replace(",", " ")
+        f"Fourchette : {prix_estime - marge:,.0f} — {prix_estime + marge:,.0f} FCFA".replace(",", " ")
     )
 
-    st.caption(
-        "⚠️ Estimation générée par un modèle entraîné sur des données "
-        "synthétiques à but pédagogique. Ne pas utiliser pour une "
-        "transaction réelle."
-    )
-
-st.divider()
-st.caption("Projet réalisé par Amade Gueye Ndiaye — Licence Économie Appliquée, UAM Diamniadio")
+st.caption("Projet d'Amade Gueye Ndiaye — UAM Diamniadio · données synthétiques à but pédagogique")
